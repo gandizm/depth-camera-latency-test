@@ -2,7 +2,7 @@
 
 | 设备 | 枚举 | GUI 拉流 | 圆点解码 | 时间戳说明 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| R200 / FW 1.0.72.10 | PASS | PASS：RGB 60fps；RGB+depth 各 60fps | PASS：depth off 131、on 11 个对照样本 | SYSTEM_TIME | PARTIAL：矩阵待重复 |
+| R200 / FW 1.0.72.10 | PASS | PASS：RGB 60fps；RGB+depth 各约 60fps | PASS：10 项 R1 均有样本 | SYSTEM_TIME | PARTIAL：仍需重复 ≥3 次 |
 | SR300 | 能力路径已实现 | 待硬件 | 使用 color，IR 不推荐 | Global Time 官方不支持 | PENDING |
 | D400 系列 | 标准 RS2 profile 路径 | 待硬件 | 官方样例支持 color/IR | 按设备与选项实测 | PENDING |
 
@@ -14,9 +14,12 @@
 - 本项目自动选择 R200 Color 640×480@60 YUYV，并把 sensor/application queue
   设为 1；
 - `--rotate 180` 同时旋转预览和检测，适合 USB 线限制导致的倒装相机。
+- RGB 预览为彩色且保持宽高比；检测框为绿色，只有圆点时钟保持黑白。
 - 同条件对照中，单 RGB median 80.26ms、RGB+depth median 83.01ms；depth-on
   只有 11 个样本，当前不能推断差异。首次功能验收为 73.41ms；详细口径见
   `R200_INITIAL_RESULTS.md`。
+- R1 十项矩阵和限制见 `R200_MATRIX_20260822.md`；请求 90fps depth 的两项实际
+  callback 都约 60fps。IR1 640×480@90 实到 90.27fps，但看不到屏幕圆点。
 
 兼容状态只表示表中已列出的证据。没有 SR300 真机时，不得把“代码没有设备名
 分支”写成 SR300 已通过。

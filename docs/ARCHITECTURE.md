@@ -2,8 +2,9 @@
 
 ## 目标
 
-本项目的视觉延迟只由一个被选中的可见光或红外流解码；可用 `--with-depth`
-同时开启 Z16 depth 作为组合负载。它不是 ROS 节点，也不在测量路径里启用
+本项目的视觉延迟只由一个被选中的可见光或红外流解码；默认优先同时请求
+640×480@90 Z16 depth 作为组合负载，`--no-depth` 用于单流基线。它不是 ROS
+节点，也不在测量路径里启用
 depth alignment、colorizer、pointcloud、同步器或多帧队列，以免把这些额外
 处理的等待时间混进相机基础延迟。
 
@@ -21,17 +22,19 @@ RealSense sensor
 后台检测线程
     ├─ YUYV/RGB/BGR/Y8 → 灰度
     ├─ 可选 180° 旋转
+    ├─ 低于 VGA 时仅将检测工作图等比放大到至少 640×480
     ├─ 全帧 Hough circles
     ├─ 选择横向跨度最大的一排
     └─ 校验 2-bit checksum 并解码屏幕时钟
 
 GUI 主线程
     ├─ 生成下一组二进制圆点
-    ├─ 显示检测预览和统计
+    ├─ 等比 letterbox 显示检测预览和统计
     └─ 记录 imshow/waitKey 渲染调用耗时
 ```
 
-辅助 depth callback 只计数并立即释放帧，不做深度处理。若视觉流与 depth 位于
+辅助 depth callback 只计数并立即释放帧，不做深度处理。请求 profile 的 FPS 与
+实测 callback FPS 分开报告。若视觉流与 depth 位于
 同一 physical sensor，程序一次 `open()` 两个 profile 并用 stream type 路由；
 若位于不同 sensor，则先全部 open 再 start，退出时反序 stop/close。
 

@@ -58,8 +58,8 @@ latency_detector::latency_detector(int digits, int display_width,
       _start_time(std::chrono::steady_clock::now()),
       _render_start(_start_time),
       _rotate_180(rotate_180),
-      _last_preview(cv::Mat::zeros(_preview_size, CV_8UC1)),
-      _instructions(cv::Mat::zeros(cv::Size(display_width, 145), CV_8UC1)),
+      _last_preview(cv::Mat::zeros(_preview_size, CV_8UC3)),
+      _instructions(cv::Mat::zeros(cv::Size(display_width, 145), CV_8UC3)),
       _worker([this]() { detect_loop(); })
 {
     update_instructions();
@@ -225,6 +225,45 @@ cv::Mat latency_detector::frame_to_gray(const rs2::frame& frame)
     return gray;
 }
 
+cv::Mat latency_detector::frame_to_bgr(const rs2::frame& frame)
+{
+    auto video = frame.as<rs2::video_frame>();
+    if (!video) throw std::runtime_error("Latency detector needs a video frame");
+    const cv::Size size(video.get_width(), video.get_height());
+    cv::Mat bgr;
+    switch (frame.get_profile().format())
+    {
+        case RS2_FORMAT_Y8:
+        {
+            cv::Mat gray(size, CV_8UC1, const_cast<void*>(frame.get_data()),
+                         video.get_stride_in_bytes());
+            cv::cvtColor(gray, bgr, cv::COLOR_GRAY2BGR);
+            break;
+        }
+        case RS2_FORMAT_YUYV:
+        {
+            cv::Mat yuyv(size, CV_8UC2, const_cast<void*>(frame.get_data()),
+                         video.get_stride_in_bytes());
+            cv::cvtColor(yuyv, bgr, cv::COLOR_YUV2BGR_YUY2);
+            break;
+        }
+        case RS2_FORMAT_BGR8:
+            bgr = cv::Mat(size, CV_8UC3, const_cast<void*>(frame.get_data()),
+                          video.get_stride_in_bytes()).clone();
+            break;
+        case RS2_FORMAT_RGB8:
+        {
+            cv::Mat rgb(size, CV_8UC3, const_cast<void*>(frame.get_data()),
+                        video.get_stride_in_bytes());
+            cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
+            break;
+        }
+        default:
+            throw std::runtime_error("Selected frame format is not supported");
+    }
+    return bgr;
+}
+
 void latency_detector::request_new_value()
 {
     _new_value_requested = true;
@@ -249,10 +288,32 @@ void latency_detector::detect_loop()
         try
         {
             auto gray = frame_to_gray(current.frame);
-            if (_rotate_180.load()) cv::rotate(gray, gray, cv::ROTATE_180);
-            cv::medianBlur(gray, gray, 5);
+            auto preview_bgr = frame_to_bgr(current.frame);
+            if (_rotate_180.load())
+            {
+                cv::rotate(gray, gray, cv::ROTATE_180);
+                cv::rotate(preview_bgr, preview_bgr, cv::ROTATE_180);
+            }
+            // Intel's original Hough parameters target a 1080p input.  At
+            // QVGA the projected clock circles can be too small to reach the
+            // fixed accumulator threshold.  Normalize only the detector's
+            // working image to at least VGA; capture timing and metadata stay
+            // attached to the original frame.
+            cv::Mat detection = gray;
+            const auto detector_scale = std::max({
+                1.0,
+                640.0 / static_cast<double>(gray.cols),
+                480.0 / static_cast<double>(gray.rows)});
+            if (detector_scale > 1.0)
+            {
+                cv::resize(gray, detection, cv::Size(), detector_scale,
+                           detector_scale, cv::INTER_LINEAR);
+                cv::resize(preview_bgr, preview_bgr, cv::Size(), detector_scale,
+                           detector_scale, cv::INTER_LINEAR);
+            }
+            cv::medianBlur(detection, detection, 5);
             std::vector<cv::Vec3f> circles;
-            cv::HoughCircles(gray, circles, cv::HOUGH_GRADIENT,
+            cv::HoughCircles(detection, circles, cv::HOUGH_GRADIENT,
                              1, 10, 100, 30, 1, 100);
 
             // The official sample searches only the top quarter of the image.
@@ -260,7 +321,7 @@ void latency_detector::detect_loop()
             // the most circles and widest horizontal span anywhere in-frame.
             std::vector<cv::Vec3f> selected_circles;
             double best_score = -1.0;
-            const auto y_tolerance = std::max(20.0f, gray.rows * 0.10f);
+            const auto y_tolerance = std::max(20.0f, detection.rows * 0.10f);
             for (const auto& anchor : circles)
             {
                 std::vector<cv::Vec3f> row;
@@ -286,7 +347,7 @@ void latency_detector::detect_loop()
                 { return left[0] < right[0]; });
             _detected_circles = static_cast<int>(selected_circles.size());
 
-            auto annotated = gray.clone();
+            auto annotated = preview_bgr;
             for (const auto& circle : selected_circles)
             {
                 const int radius = static_cast<int>(circle[2]);
@@ -294,12 +355,23 @@ void latency_detector::detect_loop()
                     cv::Rect(static_cast<int>(circle[0]) - radius - 5,
                              static_cast<int>(circle[1]) - radius - 5,
                              2 * radius + 10, 2 * radius + 10),
-                    cv::Scalar(96), -1, cv::LINE_AA);
+                    cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
             }
-            cv::resize(annotated, annotated, _preview_size);
+            const auto preview_scale = std::min(
+                static_cast<double>(_preview_size.width) / annotated.cols,
+                static_cast<double>(_preview_size.height) / annotated.rows);
+            cv::Mat scaled_preview;
+            cv::resize(annotated, scaled_preview, cv::Size(), preview_scale,
+                       preview_scale, cv::INTER_AREA);
+            cv::Mat preview = cv::Mat::zeros(_preview_size, CV_8UC3);
+            const cv::Rect preview_roi(
+                (_preview_size.width - scaled_preview.cols) / 2,
+                (_preview_size.height - scaled_preview.rows) / 2,
+                scaled_preview.cols, scaled_preview.rows);
+            scaled_preview.copyTo(preview(preview_roi));
             {
                 std::lock_guard<std::mutex> lock(_preview_mutex);
-                _last_preview = std::move(annotated);
+                _last_preview = std::move(preview);
             }
 
             if (selected_circles.size() > 1)
@@ -394,11 +466,11 @@ void latency_detector::update_instructions()
         if (!_samples.empty()) arrival = _samples.back().arrival_to_callback_ms;
     }
 
-    cv::Mat panel = cv::Mat::zeros(cv::Size(_display_width, 145), CV_8UC1);
+    cv::Mat panel = cv::Mat::zeros(cv::Size(_display_width, 145), CV_8UC3);
     const auto draw = [&](const std::string& text, int y, double scale = 0.67)
     {
         cv::putText(panel, text, cv::Point(30, y), cv::FONT_HERSHEY_SIMPLEX,
-                    scale, cv::Scalar(255), 2, cv::LINE_AA);
+                    scale, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
     };
     draw(_profile_description, 24, 0.55);
     draw("Point the camera at all circles. Q/Esc exits; F fullscreen; R rotates 180 deg.",

@@ -9,6 +9,7 @@ repeats="${REPEATS:-3}"
 duration="${DURATION:-60}"
 warmup="${WARMUP:-10}"
 rotation="${ROTATE:-0}"
+only=",${ONLY:-},"
 serial_args=()
 
 if [[ -n "${SERIAL:-}" ]]; then
@@ -18,14 +19,16 @@ fi
 mkdir -p "${result_dir}"
 
 matrix=(
-    "rgb-vga-30|--stream color --width 640 --height 480 --fps 30 --format yuyv"
-    "rgb-vga-60|--stream color --width 640 --height 480 --fps 60 --format yuyv"
-    "rgb-qvga-60|--stream color --width 320 --height 240 --fps 60 --format yuyv"
-    "rgb-1080p-30|--stream color --width 1920 --height 1080 --fps 30 --format yuyv"
+    "rgb-vga-30|--stream color --width 640 --height 480 --fps 30 --format yuyv --no-depth"
+    "rgb-vga-60|--stream color --width 640 --height 480 --fps 60 --format yuyv --no-depth"
+    "rgb-qvga-60|--stream color --width 320 --height 240 --fps 60 --format yuyv --no-depth"
+    "rgb-1080p-30|--stream color --width 1920 --height 1080 --fps 30 --format yuyv --no-depth"
     "rgb-vga-30-depth|--stream color --width 640 --height 480 --fps 30 --format yuyv --with-depth --depth-width 640 --depth-height 480 --depth-fps 30"
     "rgb-vga-60-depth|--stream color --width 640 --height 480 --fps 60 --format yuyv --with-depth --depth-width 640 --depth-height 480 --depth-fps 60"
     "rgb-qvga-60-depth|--stream color --width 320 --height 240 --fps 60 --format yuyv --with-depth --depth-width 640 --depth-height 480 --depth-fps 60"
     "rgb-1080p-30-depth|--stream color --width 1920 --height 1080 --fps 30 --format yuyv --with-depth --depth-width 640 --depth-height 480 --depth-fps 30"
+    "rgb-vga-60-depth-vga-90|--stream color --width 640 --height 480 --fps 60 --format yuyv --with-depth --depth-width 640 --depth-height 480 --depth-fps 90"
+    "rgb-vga-60-depth-qvga-90|--stream color --width 640 --height 480 --fps 60 --format yuyv --with-depth --depth-width 320 --depth-height 240 --depth-fps 90"
 )
 
 echo "Results: ${result_dir}"
@@ -34,6 +37,9 @@ echo "Keep the selected camera fixed on the full circle row for every run."
 for repeat in $(seq 1 "${repeats}"); do
     for entry in "${matrix[@]}"; do
         label="${entry%%|*}"
+        if [[ "${only}" != ",," && "${only}" != *",${label},"* ]]; then
+            continue
+        fi
         argument_text="${entry#*|}"
         read -r -a profile_args <<<"${argument_text}"
         stem="${label}-r${repeat}"

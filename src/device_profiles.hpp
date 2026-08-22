@@ -37,10 +37,14 @@ struct selected_profile
 
 struct depth_request
 {
-    bool enabled = false;
-    int width = 0;
-    int height = 0;
-    int fps = 0;
+    bool enabled = true;
+    bool required = false;
+    bool width_explicit = false;
+    bool height_explicit = false;
+    bool fps_explicit = false;
+    int width = 640;
+    int height = 480;
+    int fps = 90;
 };
 
 inline std::string device_info(const rs2::device& device, rs2_camera_info key,
@@ -230,18 +234,20 @@ inline selected_profile choose_depth_profile(const rs2::device& device,
             auto video = stream_profile.as<rs2::video_stream_profile>();
             if (!video || video.stream_type() != RS2_STREAM_DEPTH
                 || video.format() != RS2_FORMAT_Z16) continue;
-            if (request.width > 0 && video.width() != request.width) continue;
-            if (request.height > 0 && video.height() != request.height) continue;
-            if (request.fps > 0 && video.fps() != request.fps) continue;
+            if (request.width_explicit && video.width() != request.width) continue;
+            if (request.height_explicit && video.height() != request.height) continue;
+            if (request.fps_explicit && video.fps() != request.fps) continue;
 
-            const int fps_match = video.fps() == visual.fps() ? 1 : 0;
-            const int dimensions_match =
-                video.width() == visual.width() && video.height() == visual.height()
+            const int preferred_dimensions =
+                video.width() == request.width && video.height() == request.height
                 ? 1 : 0;
+            const int preferred_fps = video.fps() == request.fps ? 1 : 0;
+            const int fps_match = video.fps() == visual.fps() ? 1 : 0;
             const int pixel_distance = -std::abs(
-                video.width() * video.height() - visual.width() * visual.height());
+                video.width() * video.height() - request.width * request.height);
             candidates.push_back({sensor, video,
-                {fps_match, dimensions_match, video.fps(), pixel_distance}});
+                {preferred_dimensions, preferred_fps, video.fps(),
+                 fps_match + pixel_distance}});
         }
     }
     if (candidates.empty())

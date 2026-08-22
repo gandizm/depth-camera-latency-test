@@ -1,7 +1,8 @@
 /build/
 /install/
-/results/*.csv
-/results/*.json
+/results/**/*.csv
+/results/**/*.json
+/results/**/*.log
 *.swp
 *~
 __pycache__/

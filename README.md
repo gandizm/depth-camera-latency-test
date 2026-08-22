@@ -17,11 +17,13 @@ RealSense 设备保留同一入口。
 - 使用序列号或设备索引选择相机，避免“永远取第一个设备”；
 - 默认低延迟策略：优先 color、最高 FPS、接近 640×480、原生 YUYV；
 - 可显式选择分辨率、FPS、格式和 quality 策略；
-- 可同时开启 Z16 depth 作为 USB/SDK 负载，并分别统计视觉流和 depth 实际 FPS；
+- 默认同时请求 640×480@90 Z16 depth（不可用时能力降级），并分别统计视觉流和
+  depth 实际 FPS；`--no-depth` 提供严格单流对照；
 - 直接使用 `sensor.start(callback)`，应用侧只保留最新一帧；
 - 检测线程与采集 callback 分离，慢检测不会把旧帧排成长队；
 - `--rotate 180` 或运行时 `R` 键旋转采集画面、预览和识别；
 - 全帧寻找横向跨度最大的一排圆点，不再限定画面上四分之一；
+- 低于 VGA 的检测工作图等比归一到 VGA，预览保持原始宽高比并 letterbox；
 - Ubuntu 22.04 GNOME Wayland 下默认使用普通置顶窗口，只用 Q/Esc 退出；
 - CSV 保存每个有效视觉延迟样本、frame number、frame timestamp 和 domain。
 
@@ -43,6 +45,14 @@ export RS2_PREFIX=/path/to/rs2_install
 scripts/build.sh
 ```
 
+Windows（Developer PowerShell）使用同一 CMake 工程，不依赖 Bash 脚本：
+
+```powershell
+cmake -S . -B build -Drealsense2_DIR=C:\path\to\librealsense\lib\cmake\realsense2
+cmake --build build --config Release
+.\build\Release\rs2-latency-lab.exe --list
+```
+
 ## 运行
 
 先确认设备和真实可用 profile：
@@ -51,7 +61,9 @@ scripts/build.sh
 scripts/run.sh --list
 ```
 
-默认低延迟模式会选指定设备的 color 最高帧率 VGA 附近 profile：
+默认低延迟模式会选指定设备的 color 最高帧率 VGA 附近 profile，并优先同时请求
+Depth 640×480@90。profile 写着 90 不代表实际 callback 一定达到 90，最终以
+`depth_fps` 为准：
 
 ```bash
 scripts/run.sh --csv results/run.csv
@@ -74,11 +86,11 @@ scripts/run.sh --serial DEVICE_SERIAL --csv results/device-a.csv
 ```bash
 # 高帧率 VGA
 scripts/run.sh --stream color --width 640 --height 480 --fps 60 \
-  --format yuyv --csv results/color-640x480-60.csv
+  --format yuyv --no-depth --csv results/color-640x480-60.csv
 
 # 高分辨率 1080p
 scripts/run.sh --stream color --width 1920 --height 1080 --fps 30 \
-  --format yuyv --csv results/color-1920x1080-30.csv
+  --format yuyv --no-depth --csv results/color-1920x1080-30.csv
 
 # 自动选择最高分辨率 profile
 scripts/run.sh --policy quality --csv results/color-quality.csv
@@ -114,10 +126,18 @@ FPS 提高通常会缩短等待下一帧的采样周期，但不保证总延迟�
 USB 带宽、格式转换、驱动队列、检测计算和显示刷新都可能抵消收益。建议按
 [实验矩阵](docs/EXPERIMENT_PLAN.md)重复测试，而不是只看枚举出的 FPS 数字。
 
-完整的 8 组 RGB 分辨率/FPS × depth 开关矩阵默认每组重复 3 次、每次 60 秒：
+完整的 10 组矩阵包含 4 个 RGB profile 的 depth 开关，以及 VGA60 RGB 搭配
+VGA90/QVGA90 depth；默认每组重复 3 次、每次 60 秒：
 
 ```bash
 REPEATS=3 WARMUP=10 DURATION=60 ROTATE=180 scripts/run-matrix.sh
+```
+
+只补测指定轮次时，用逗号分隔精确 label（不会删除目录内其他结果）：
+
+```bash
+ONLY=rgb-qvga-60,rgb-qvga-60-depth REPEATS=1 \
+  RESULT_DIR=results/RUN_DIR ROTATE=180 scripts/run-matrix.sh
 ```
 
 保持相机和屏幕位置不变。脚本为每轮保存 CSV 与控制台日志，并自动生成
@@ -138,6 +158,7 @@ python3 scripts/summarize.py results/RUN_DIR \
 - [FPS/分辨率延迟实验计划](docs/EXPERIMENT_PLAN.md)
 - [设备兼容状态](docs/DEVICE_COMPATIBILITY.md)
 - [R200 初步真机结果](docs/R200_INITIAL_RESULTS.md)
+- [R200 十项矩阵（2026-08-22/23）](docs/R200_MATRIX_20260822.md)
 - [后续 AI/维护者交接](docs/HANDOFF.md)
 - [官方资料索引](docs/REFERENCES.md)
 

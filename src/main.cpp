@@ -60,7 +60,8 @@ void print_help(const char* program)
         << "  --format auto|yuyv|bgr8|rgb8|y8\n"
         << "  --policy low-latency|quality (default: low-latency)\n\n"
         << "Auxiliary load:\n"
-        << "  --with-depth              enable a simultaneous Z16 depth stream\n"
+        << "  --with-depth              require depth (default: prefer 640x480@90)\n"
+        << "  --no-depth                disable the default depth stream\n"
         << "  --depth-width N --depth-height N --depth-fps N\n\n"
         << "Window/output:\n"
         << "  --fullscreen              start fullscreen (default: visible window)\n"
@@ -133,20 +134,31 @@ options parse_options(int argc, char** argv)
             result.profile.format = value_after(&index, argument);
         else if (argument == "--policy")
             result.profile.policy = value_after(&index, argument);
-        else if (argument == "--with-depth") result.depth.enabled = true;
+        else if (argument == "--with-depth")
+        {
+            result.depth.enabled = true;
+            result.depth.required = true;
+        }
+        else if (argument == "--no-depth") result.depth.enabled = false;
         else if (argument == "--depth-width")
         {
             result.depth.enabled = true;
+            result.depth.required = true;
+            result.depth.width_explicit = true;
             result.depth.width = parse_int(argument, value_after(&index, argument));
         }
         else if (argument == "--depth-height")
         {
             result.depth.enabled = true;
+            result.depth.required = true;
+            result.depth.height_explicit = true;
             result.depth.height = parse_int(argument, value_after(&index, argument));
         }
         else if (argument == "--depth-fps")
         {
             result.depth.enabled = true;
+            result.depth.required = true;
+            result.depth.fps_explicit = true;
             result.depth.fps = parse_int(argument, value_after(&index, argument));
         }
         else if (argument == "--duration")
@@ -218,8 +230,19 @@ int main(int argc, char** argv) try
     std::optional<rs2_latency::selected_profile> depth;
     if (arguments.depth.enabled)
     {
-        depth = rs2_latency::choose_depth_profile(
-            selected.device, arguments.depth, selected.profile);
+        try
+        {
+            depth = rs2_latency::choose_depth_profile(
+                selected.device, arguments.depth, selected.profile);
+        }
+        catch (const std::runtime_error& error)
+        {
+            if (arguments.depth.required) throw;
+            std::cerr << "DEFAULT_DEPTH_SKIPPED " << error.what() << "\n";
+        }
+    }
+    if (depth)
+    {
         const auto& profile = depth->profile;
         std::ostringstream depth_text;
         depth_text << "Depth[" << profile.stream_index() << "] "
@@ -320,7 +343,7 @@ int main(int argc, char** argv) try
         while (running)
         {
             detector.begin_render();
-            cv::Mat display = cv::Mat::zeros(display_height, display_width, CV_8UC1);
+            cv::Mat display = cv::Mat::zeros(display_height, display_width, CV_8UC3);
             detector.copy_preview_to(display);
 
             const auto bits = pack_value(detector.next_value(), digits);
@@ -332,7 +355,7 @@ int main(int argc, char** argv) try
                 {
                     cv::circle(display,
                         cv::Point(50 + circle_width * index + radius, 70 + radius),
-                        radius, cv::Scalar(255), -1, cv::LINE_AA);
+                        radius, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
                 }
             }
 

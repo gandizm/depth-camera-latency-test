@@ -69,6 +69,7 @@ private:
     void request_new_value();
     void update_instructions();
     static cv::Mat frame_to_gray(const rs2::frame& frame);
+    static cv::Mat frame_to_bgr(const rs2::frame& frame);
     static double percentile(std::vector<double> values, double p);
 
     const int _digits;

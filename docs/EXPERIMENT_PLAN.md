@@ -17,10 +17,12 @@
 
 | 设备 | Stream/profile | 目的 | 状态 |
 | --- | --- | --- | --- |
-| R200 | Color 640×480@30 YUYV，depth off/on | 30fps 基线与 depth 负载 | 待采样 |
-| R200 | Color 640×480@60 YUYV，depth off/on | 验证高 FPS 延迟收益 | 待采样 |
-| R200 | Color 320×240@60 YUYV，depth off/on | 区分 RGB 分辨率与 FPS | 待采样 |
-| R200 | Color 1920×1080@30 YUYV，depth off/on | 最高 RGB 质量权衡 | 待采样 |
+| R200 | Color 640×480@30 YUYV，depth off/on | 30fps 基线与 depth 负载 | R1 完成，待重复 |
+| R200 | Color 640×480@60 YUYV，depth off/on | 验证高 FPS 延迟收益 | R1 完成，待重复 |
+| R200 | Color 320×240@60 YUYV，depth off/on | 区分 RGB 分辨率与 FPS | R1 完成，待重复 |
+| R200 | Color 1920×1080@30 YUYV，depth off/on | 最高 RGB 质量权衡 | R1 完成，待重复 |
+| R200 | Color 640×480@60 + Depth 640×480@90 | 最大 VGA depth FPS 负载 | R1 完成，实际约 60fps |
+| R200 | Color 640×480@60 + Depth 320×240@90 | 近距 depth 模式与最大 FPS | R1 完成，实际约 60fps |
 | SR300 | 自动枚举后的 color 30/60 档 | 跨型号比较 | 待硬件 |
 
 每次保存：
@@ -32,7 +34,7 @@
 - frame timestamp domain；
 - 是否使用自动曝光、曝光值和显示器刷新率。
 
-仓库的 `scripts/run-matrix.sh` 实现上述 8 组，每组默认重复 3 次。运行期间不移动
+仓库的 `scripts/run-matrix.sh` 实现上述 10 组，每组默认重复 3 次。运行期间不移动
 相机、窗口或显示器；任何 `samples=0` 的轮次都视为无效并重新采样，不能用
 `capture_fps` 替代视觉延迟结果。
 
