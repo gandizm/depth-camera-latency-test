@@ -1,0 +1,8 @@
+/build/
+/install/
+/results/*.csv
+/results/*.json
+*.swp
+*~
+__pycache__/
+*.pyc

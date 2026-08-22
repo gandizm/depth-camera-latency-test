@@ -1,0 +1,12 @@
+RS2 Latency Lab
+Copyright 2026 ZMiaow
+
+This project derives its visual clock encoding and circle-detection method from
+the Intel RealSense librealsense rs-latency-tool sample:
+https://github.com/realsenseai/librealsense/tree/master/wrappers/opencv/latency-tool
+
+The upstream sample is Copyright(c) 2017 Intel Corporation and is distributed
+under the Apache License, Version 2.0. Changes include command-line device and
+profile selection, latest-frame callback capture, robust timestamp handling,
+CSV output, 180-degree rotation, full-frame circle-row selection, and Ubuntu
+Wayland/XWayland window behavior.
