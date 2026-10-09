@@ -11,6 +11,24 @@ RealSense 设备保留同一入口。
 
 > 这仍是计算机视觉估算，不替代高速相机、光电二极管或示波器等专用延迟测试。
 
+## 极简 Python 入口（RealSense / Berxel P100R）
+
+`python_latency_test.py` 提供一个不依赖本项目 C++ 构建的快速测试入口。它支持
+安装了 `pyrealsense2` 的 R200、SR300、D435i 等设备，也支持 P100R 随官方 Python
+SDK 提供的 `BerxelSdkDriver`。程序让相机回拍全屏黑白圆点，输出视觉链路的
+median、mean 和 p95 延迟；该值包含显示器、相机、USB/驱动和应用取帧延迟。
+
+```bash
+# RealSense
+python3 python_latency_test.py --backend rs --samples 100
+
+# P100R；默认从相邻目录 ../Python 查找 BerxelSdkDriver
+python3 python_latency_test.py --backend berxel --samples 100
+```
+
+Windows、Ubuntu 和 ARM Linux 均使用同一 Python 文件。P100R SDK 的动态库仍需按
+官方 SDK 的平台目录准备；`--berxel-root` 可显式指定包含 `BerxelSdkDriver` 的目录。
+
 ## 已实现
 
 - 列出所有已连接设备及可用于屏幕测试的 color/infrared profile；
