@@ -10,6 +10,7 @@ import importlib
 import os
 import statistics
 import sys
+import threading
 import time
 
 import cv2
@@ -118,6 +119,46 @@ def p100r_frames(root):
     if device.startStreams(color) != 0:
         context.closeDevice(device)
         context.destroyCamera()
+
+
+class LatestFrameSource:
+    """Keep capture off the GUI loop, matching the original latest-frame path."""
+
+    def __init__(self, source):
+        self.source = source
+        self.latest = None
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def _run(self):
+        try:
+            for item in self.source:
+                if self.stop_event.is_set():
+                    break
+                with self.lock:
+                    self.latest = item
+        except Exception as error:
+            with self.lock:
+                self.latest = error
+
+    def take(self):
+        with self.lock:
+            item, self.latest = self.latest, None
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def close(self):
+        self.stop_event.set()
+        self.thread.join(timeout=1.0)
+        try:
+            self.source.close()
+        except Exception:
+            pass
         raise RuntimeError("Could not start Berxel color stream")
     try:
         while True:
@@ -146,16 +187,19 @@ def main():
     parser.add_argument("--windowed", action="store_true")
     args = parser.parse_args()
 
-    source = rs_frames() if args.backend == "rs" else p100r_frames(args.berxel_root)
+    source = LatestFrameSource(
+        rs_frames() if args.backend == "rs" else p100r_frames(args.berxel_root))
     window = "Intel RS2 latency pattern"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     if not args.windowed:
         cv2.setWindowProperty(window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    source.start()
 
     start = time.perf_counter()
     current = max(1, int((time.perf_counter() - start) * 1000) % MODULUS)
     samples = []
     pending_new_value = False
+    print("WINDOW_READY: Intel circle pattern is visible")
     print("Aim the selected camera at the complete circle row. Press Q or Esc to stop.")
 
     try:
@@ -178,7 +222,13 @@ def main():
             cv2.waitKey(1)
             render_ms = (time.perf_counter() - render_start) * 1000.0
 
-            frame, arrival, _ = next(source)
+            packet = source.take()
+            if packet is None:
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), ord("Q"), 27):
+                    break
+                continue
+            frame, arrival, _ = packet
             decoded, circle_count = decode_frame(frame)
             if decoded == current:
                 callback_clock = int((arrival - start) * 1000) % MODULUS
@@ -194,10 +244,7 @@ def main():
                 break
     finally:
         cv2.destroyAllWindows()
-        try:
-            source.close()
-        except Exception:
-            pass
+        source.close()
 
     if samples:
         print("count=%d median=%.3f mean=%.3f p95=%.3f ms" % (
