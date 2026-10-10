@@ -1,76 +1,211 @@
 #!/usr/bin/env python3
-"""Tiny cross-platform visual latency test for RealSense or Berxel/P100R.
+"""Intel rs-latency-tool style visual latency test.
 
-Point the selected camera at the full-screen window.  The reported value is
-screen flip -> frame returned by the SDK -> center-dot detection.  It is a
-visual pipeline measurement, not exposure time.
+The display protocol and detector follow the original Intel sample: two anchor
+circles, a 16-circle encoded row, two parity bits, Hough circle detection, and
+latest-frame latency accounting. Only the frame source is selectable.
 """
-import argparse, importlib, os, statistics, sys, time
-import cv2, numpy as np
+import argparse
+import importlib
+import os
+import statistics
+import sys
+import time
 
-def berxel_frames(berxel_root=None):
-    root=berxel_root or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Python')
-    sys.path.insert(0, os.path.abspath(root))
-    from BerxelSdkDriver.BerxelHawkContext import BerxelHawkContext
-    from BerxelSdkDriver.BerxelHawkDefines import BerxelHawkStreamType
-    ctx=BerxelHawkContext(); ctx.initCamera(); devices=ctx.getDeviceList()
-    if not devices: raise RuntimeError('No Berxel device found')
-    dev=ctx.openDevice(devices[0]);
-    if dev is None: raise RuntimeError('Could not open Berxel device')
-    if dev.startStreams(BerxelHawkStreamType.forward_dict['BERXEL_HAWK_COLOR_STREAM']) != 0:
-        raise RuntimeError('Could not start Berxel color stream')
-    try:
-        while True:
-            f=dev.readColorFrame(100)
-            if f is not None:
-                w,h=f.getWidth(),f.getHeight()
-                raw=np.ctypeslib.as_array(f.getDataAsUint8()).reshape((h,w,3)).copy()
-                yield raw, time.perf_counter(), f.getTimeStamp()
-                dev.releaseFrame(f)
-    finally:
-        dev.stopStream(1); ctx.closeDevice(dev); ctx.destroyCamera()
+import cv2
+import numpy as np
+
+
+DIGITS = 16
+MODULUS = 1 << (DIGITS - 2)
+
+
+def pack_value(value):
+    bits = [False] * DIGITS
+    for index in range(DIGITS - 1, 1, -1):
+        bits[index] = bool(value & 1)
+        value >>= 1
+    on_bits = sum(bits[2:])
+    bits[0] = (on_bits % 2) == 1
+    bits[1] = ((on_bits // 2) % 2) == 1
+    return bits
+
+
+def unpack_value(bits):
+    on_bits = sum(bits[2:])
+    if ((on_bits % 2) == 1) != bits[0]:
+        return None
+    if (((on_bits // 2) % 2) == 1) != bits[1]:
+        return None
+    value = 0
+    for bit in bits[2:]:
+        value = value * 2 + int(bit)
+    return value
+
+
+def select_circle_row(circles, height):
+    selected = []
+    best_score = -1.0
+    tolerance = max(20.0, height * 0.10)
+    for anchor in circles:
+        row = [candidate for candidate in circles
+               if abs(float(candidate[1]) - float(anchor[1])) <= tolerance]
+        if len(row) < 2:
+            continue
+        span = max(float(c[0]) for c in row) - min(float(c[0]) for c in row)
+        score = len(row) * 10000.0 + span
+        if score > best_score:
+            best_score = score
+            selected = row
+    return sorted(selected, key=lambda c: c[0])
+
+
+def decode_frame(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    detection = cv2.medianBlur(gray, 5)
+    circles = cv2.HoughCircles(
+        detection, cv2.HOUGH_GRADIENT, 1, 10,
+        param1=100, param2=30, minRadius=1, maxRadius=100)
+    if circles is None:
+        return None, 0
+    row = select_circle_row(circles[0], detection.shape[0])
+    if len(row) < DIGITS + 2:
+        return None, len(row)
+    left = float(row[0][0])
+    right = float(row[-1][0])
+    if right <= left:
+        return None, len(row)
+    bits = [False] * DIGITS
+    for circle in row[1:-1]:
+        bit = int(DIGITS * (float(circle[0]) - left) / (right - left))
+        if 0 <= bit < DIGITS:
+            bits[bit] = True
+    return unpack_value(bits), len(row)
+
 
 def rs_frames():
-    rs=importlib.import_module('pyrealsense2')
-    p=rs.pipeline(); c=rs.config(); c.enable_stream(rs.stream.color)
-    p.start(c)
+    rs = importlib.import_module("pyrealsense2")
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_stream(rs.stream.color)
+    pipeline.start(config)
     try:
         while True:
-            fs=p.wait_for_frames(); f=fs.get_color_frame()
-            if f:
-                yield np.asanyarray(f.get_data()).copy(), time.perf_counter(), f.get_timestamp()
-    finally: p.stop()
+            frameset = pipeline.wait_for_frames()
+            frame = frameset.get_color_frame()
+            if frame:
+                yield np.asanyarray(frame.get_data()).copy(), time.perf_counter(), frame.get_timestamp()
+    finally:
+        pipeline.stop()
+
+
+def p100r_frames(root):
+    root = os.path.abspath(root)
+    sys.path.insert(0, root)
+    sys.path.insert(0, os.path.join(root, "BerxelSdkDriver"))
+    from BerxelHawkContext import BerxelHawkContext
+    from BerxelHawkDefines import BerxelHawkStreamType
+
+    context = BerxelHawkContext()
+    context.initCamera()
+    devices = context.getDeviceList()
+    if not devices:
+        raise RuntimeError("No Berxel device found")
+    device = context.openDevice(devices[0])
+    if device is None:
+        raise RuntimeError("Could not open Berxel device")
+    color = BerxelHawkStreamType.forward_dict["BERXEL_HAWK_COLOR_STREAM"]
+    if device.startStreams(color) != 0:
+        context.closeDevice(device)
+        context.destroyCamera()
+        raise RuntimeError("Could not start Berxel color stream")
+    try:
+        while True:
+            frame = device.readColorFrame(100)
+            if frame is None:
+                continue
+            width, height = frame.getWidth(), frame.getHeight()
+            data = np.ctypeslib.as_array(frame.getDataAsUint8())
+            image = data.reshape((height, width, 3)).copy()
+            yield image, time.perf_counter(), frame.getTimeStamp()
+            device.releaseFrame(frame)
+    finally:
+        device.stopStream(color)
+        context.closeDevice(device)
+        context.destroyCamera()
+
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('--backend',choices=['auto','berxel','rs'],default='auto')
-    ap.add_argument('--samples',type=int,default=100); ap.add_argument('--panel-ms',type=float,default=0)
-    ap.add_argument('--berxel-root',default=None, help='directory containing BerxelSdkDriver')
-    ap.add_argument('--period-ms',type=float,default=200); a=ap.parse_args()
-    backend=a.backend
-    if backend=='auto':
-        try: importlib.import_module('pyrealsense2'); backend='rs'
-        except ImportError: backend='berxel'
-    frames=rs_frames() if backend=='rs' else berxel_frames(a.berxel_root)
-    W,H=640,480; win='visual-latency'; cv2.namedWindow(win,cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(win,cv2.WND_PROP_FULLSCREEN,cv2.WINDOW_FULLSCREEN)
-    img=np.zeros((H,W,3),np.uint8); state=False; last=False; pending=None; vals=[]; next_flip=time.perf_counter()+1
-    print('backend=',backend,'; aim camera at screen; q quits')
-    while len(vals)<a.samples:
-        now=time.perf_counter()
-        if now>=next_flip:
-            state=not state; img[:]=0
-            if state: cv2.circle(img,(W//2,H//2),80,(255,255,255),-1)
-            cv2.imshow(win,img); cv2.waitKey(1); pending=(state,time.perf_counter()); next_flip=pending[1]+a.period_ms/1000
-        try: frame,arrival,_=next(frames)
-        except StopIteration: break
-        g=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY); roi=g[H//2-40:H//2+40,W//2-40:W//2+40]
-        seen=float(roi.mean())>100
-        if pending and seen!=last and seen==pending[0]:
-            ms=(arrival-pending[1])*1000-a.panel_ms
-            if 0<ms<1000: vals.append(ms); print('%3d  %.3f ms'%(len(vals),ms))
-            pending=None
-        last=seen
-        if cv2.waitKey(1)&255==ord('q'): break
-    if vals: print('median=%.3f mean=%.3f p95=%.3f ms'%(statistics.median(vals),statistics.mean(vals),np.percentile(vals,95)))
-    cv2.destroyAllWindows()
-if __name__=='__main__': main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--backend", choices=("rs", "p100r"), required=True)
+    parser.add_argument("--berxel-root", default=os.path.join("..", "Python"))
+    parser.add_argument("--samples", type=int, default=100)
+    parser.add_argument("--screen-width", type=int, default=1920)
+    parser.add_argument("--screen-height", type=int, default=1080)
+    parser.add_argument("--panel-ms", type=float, default=0.0)
+    parser.add_argument("--windowed", action="store_true")
+    args = parser.parse_args()
+
+    source = rs_frames() if args.backend == "rs" else p100r_frames(args.berxel_root)
+    window = "Intel RS2 latency pattern"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    if not args.windowed:
+        cv2.setWindowProperty(window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    start = time.perf_counter()
+    current = max(1, int((time.perf_counter() - start) * 1000) % MODULUS)
+    samples = []
+    pending_new_value = False
+    print("Aim the selected camera at the complete circle row. Press Q or Esc to stop.")
+
+    try:
+        while len(samples) < args.samples:
+            if pending_new_value:
+                current = max(1, int((time.perf_counter() - start) * 1000) % MODULUS)
+                pending_new_value = False
+
+            display = np.zeros((args.screen_height, args.screen_width, 3), np.uint8)
+            bits = pack_value(current)
+            circle_width = (args.screen_width - 120) // (DIGITS + 2)
+            radius = circle_width // 2 - 6
+            for index in range(DIGITS + 2):
+                if index == 0 or index == DIGITS + 1 or bits[index - 1]:
+                    center = (50 + circle_width * index + radius, 70 + radius)
+                    cv2.circle(display, center, radius, (255, 255, 255), -1, cv2.LINE_AA)
+
+            render_start = time.perf_counter()
+            cv2.imshow(window, display)
+            cv2.waitKey(1)
+            render_ms = (time.perf_counter() - render_start) * 1000.0
+
+            frame, arrival, _ = next(source)
+            decoded, circle_count = decode_frame(frame)
+            if decoded == current:
+                callback_clock = int((arrival - start) * 1000) % MODULUS
+                latency = (callback_clock - decoded + MODULUS) % MODULUS
+                latency -= render_ms + args.panel_ms
+                if 0.0 <= latency < 2000.0:
+                    samples.append(latency)
+                    print("%3d %.3f ms circles=%d" % (len(samples), latency, circle_count))
+                pending_new_value = True
+
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), ord("Q"), 27):
+                break
+    finally:
+        cv2.destroyAllWindows()
+        try:
+            source.close()
+        except Exception:
+            pass
+
+    if samples:
+        print("count=%d median=%.3f mean=%.3f p95=%.3f ms" % (
+            len(samples), statistics.median(samples), statistics.mean(samples),
+            np.percentile(samples, 95)))
+    else:
+        print("No decoded samples")
+
+
+if __name__ == "__main__":
+    main()
