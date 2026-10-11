@@ -1,4 +1,4 @@
-# RS2 Latency Lab
+# Depth Camera Latency Test
 
 一个基于 Intel RealSense 官方 `rs-latency-tool` 的设备无关视觉延迟 Demo。
 它让摄像头回拍屏幕上的二进制圆点时钟，从而估算“屏幕事件发生 → 帧到达应用”
@@ -13,21 +13,96 @@ RealSense 设备保留同一入口。
 
 ## 极简 Python 入口（RealSense / Berxel P100R）
 
-`python_latency_test.py` 提供一个不依赖本项目 C++ 构建的入口。它保留 Intel
-`rs-latency-tool` 的定位圆、16 位编码圆点、校验位、Hough 行检测和延迟计算，
-只替换帧来源。支持安装了 `pyrealsense2` 的 R200、SR300、D435i 等设备，也支持
-P100R 随官方 Python SDK 提供的 `BerxelSdkDriver`。
+`python_latency_test.py` 从本仓库已经验证的 C++ 版本移植编码和识别，不改动
+`src/`：16 个编码位置（含两个校验位）、两侧定位圆、全帧 Hough 行选择、
+半个间距修正后的位映射，以及原来的延迟计算。位为 0 时不画圆，不能要求
+18 个圆同时出现。默认 1280×720 普通窗口，包含彩色预览、绿色检测框和统计。
+
+P100R 使用官方 `Python/BerxelSdkDriver` 的 `startStreams(..., callback)`，
+RealSense 使用 `sensor.start(callback)`；回调入口先记录主机单调时间，再复制
+帧到容量为 1 的最新帧槽。原生 SDK 在独立采集进程内，Hough 在检测线程内，
+GUI 不等待取帧。Q/Esc、窗口 X 和限时退出都会释放相机；SDK 退出阻塞时只
+终止当前采集子进程。程序默认 100 个样本、3 秒预热、最多 60 秒。
+
+```bash
+python -m pip install -r requirements-latency.txt
+```
 
 ```bash
 # RealSense
 python3 python_latency_test.py --backend rs --samples 100
 
-# P100R；默认从相邻目录 ../Python 查找 BerxelSdkDriver
-python3 python_latency_test.py --backend p100r --samples 100
+# P100R；SDK 默认从脚本位置的相邻目录 ../Python 查找
+python3 python_latency_test.py --backend p100r --display-hz 165 --rotate 180
+
+# 显式使用本机实测较低延迟的档位
+python3 python_latency_test.py --backend p100r --stream-mode single --width 640 --height 400 --fps 30 --display-hz 165 --rotate 180
+
+# 不开窗口，检查官方 SDK 能否返回一帧
+python3 python_latency_test.py --backend p100r --probe
 ```
 
-Windows、Ubuntu 和 ARM Linux 均使用同一 Python 文件。P100R SDK 的动态库仍需按
-官方 SDK 的平台目录准备；`--berxel-root` 可显式指定包含 `BerxelSdkDriver` 的目录。
+Windows 可双击 `run_p100r.cmd`，或使用 `run_p100r.cmd --display-hz 240`。
+SDK 不随仓库分发；`--berxel-root` 指向包含 `BerxelSdkDriver` 的目录。相机型号、
+平台、架构必须与官方 DLL/SO 匹配。Windows x64 + P100R 已实机验证；Ubuntu/ARM
+仍需要相应官方库，当前没有完成这些平台的真机验证。SR300/D435i 的 Python
+适配按枚举能力选择 profile，本次没有在这些型号上验证。
+
+输出默认保存到 `results/p100r-python-latest.csv` 及同名 JSON，可用 `--csv` 指定
+路径。CSV 分别保存原始视觉间隔、平均渲染调用耗时、手动面板修正、最终估计
+值和设备时间戳域；JSON 保存帧率、样本数、标准差、分位数、覆盖帧数和设置。
+这里测的是彩色屏幕事件到 SDK 回调，不能作为深度流曝光或 ROS/DDS 延迟。
+
+### 显示刷新率与误差
+
+`--display-hz` 接受 60、120、165、240 或任意正数（例如 360）。它记录当前
+显示器设置并计算刷新周期，不修改也不自动确认操作系统实际刷新率。
+
+| 显示刷新率 | 一个刷新周期 | 理想随机相位等待均值 |
+| --- | --- | --- |
+| 60 Hz | 16.667 ms | 8.333 ms |
+| 120 Hz | 8.333 ms | 4.167 ms |
+| 165 Hz | 6.061 ms | 3.030 ms |
+| 240 Hz | 4.167 ms | 2.083 ms |
+
+上表只是单次刷新、均匀随机相位的模型；合成器排队、扫描位置、面板响应、
+滚动快门和曝光还有额外误差。不能自动把一帧周期或半帧周期当作物理面板延迟
+扣掉。`--panel-ms` 默认为 0，只在明确填写时扣除，并在结果中保留该值。
+原算法减去的 `render_ms` 是绘制/`imshow`/`waitKey` 的软件耗时，也不是实测
+面板延迟，所以同时保留未修正的 `raw_visual_latency_ms`。
+
+`--phase-jitter` 可在下一次图案更新前加入 0～1 个刷新周期的随机等待，采样
+更多相机/显示相位；它不改变识别逻辑，也不创建硬件同步。默认关闭以保留原
+更新节奏。已添加重复帧过滤、旧图案超时重发和 16.384 秒时钟回绕保护。
+
+### 2026-10-11 P100R 实测
+
+本机 Windows x64，官方 Python SDK 2.0.182，FW 25.9.1105-a6.14.08.05，
+用户报告屏幕设置为 165 Hz；手动面板修正 0 ms。以下均为原算法视觉估计，
+不是曝光到主机的绝对延迟，也不是经过多轮稳定条件复测的规格。
+
+| 配置 | 样本数 | 中位数 | P95 | 标准差 |
+| --- | --- | --- | --- | --- |
+| SDK 默认流模式，640×400@30 | 100 | 99.29 ms | 112.48 ms | 7.65 ms |
+| 同配置，显示更新随机错相 | 143 | 99.41 ms | 130.14 ms | 14.47 ms |
+| SDK 默认流模式，关闭按钮验证轮 | 128 | 97.54 ms | 119.37 ms | 10.29 ms |
+| 单流，1920×1080@30 | 67 | 117.91 ms | 163.11 ms | 27.36 ms |
+| 单流，640×400@30 | 100 | 77.97 ms | 102.21 ms | 12.39 ms |
+
+这轮单流低分辨率比默认模式低约 21 ms；不能由此推断 SDK 恰好少缓存一帧。
+切换到单流时 SDK 会默认改用 1080p，因此程序保留切换前的 profile，或者使用
+显式 `--width/--height/--fps` 请求。当前相机枚举的彩色档位最高为 30 fps，
+没有强行设置 60/90 fps。Python 接口未发现可公开配置的帧队列长度。
+
+单流 VGA 原始间隔中位数为 83.0 ms，软件渲染耗时约 4.9 ms；最终估计的
+P5/P95 为 66.05/102.21 ms，最小 63.09 ms、最大 131.89 ms。固定减去
+77.97 ms 后，90% 样本残差仍约为 -12～+24 ms。首半/后半样本中位数为
+82.82/75.04 ms，因此这次短测不能提供稳定的精确同步偏移或证明 40 ms 以下。
+
+验证：全部 16384 个编码位映射、合成图像 Hough 解码、校验错误拒绝、
+最新帧槽、时钟回绕和采集进程关闭测试；P100R 实际取帧/采样，限时退出和
+真实窗口 X 退出通过。C++ 构建检查受当前环境缺少 librealsense2 开发包限制；
+原 C++ 源文件保持未改动。
 
 ## 已实现
 
